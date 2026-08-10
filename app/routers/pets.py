@@ -66,17 +66,17 @@ def get_pets(
 
 
 @router.get("/user/{user_id}")
-def get_pets_by_user(user_id: uuid.UUID, current: CurrentUser, db: DbSession) -> list[dict]:
+def get_pets_by_user(user_id: uuid.UUID, current: CurrentUser, db: DbSession) -> dict:
     if current.id != user_id and not current.admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This is not allowed")
     owned = db.scalars(select(Pet).where(Pet.taken_by_user_id == user_id)).all()
     links = db.scalars(
         select(PetUser).where(PetUser.user_id == user_id, PetUser.saved.is_(True))
     ).all()
-    result = {pet.id: pet_payload(pet) for pet in owned}
-    for link in links:
-        result[link.pet_id] = pet_payload(link.pet, link)
-    return list(result.values())
+    return {
+        "owned_pets": [pet_payload(pet) for pet in owned],
+        "saved_pets": [pet_payload(link.pet, link) for link in links],
+    }
 
 
 @router.get("/{pet_id}")

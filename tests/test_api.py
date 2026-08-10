@@ -166,3 +166,21 @@ def test_owned_pet_cannot_be_fostered_or_reassigned(client, db):
 
     assert foster.status_code == 409
     assert adopt_again.status_code == 409
+
+
+def test_user_pet_collections_separate_owned_and_saved_pets(client, db):
+    token = _signup_and_login(client, "collector@example.com")
+    current = client.get("/login", headers={"Authorization": token}).json()
+    owned_pet_id = _create_pet(db)
+    saved_pet_id = _create_pet(db)
+
+    adopt = client.post(f"/pet/{owned_pet_id}/adopt", json={}, headers={"Authorization": token})
+    save = client.post(f"/pet/{saved_pet_id}/save", json={}, headers={"Authorization": token})
+    assert adopt.status_code == 200
+    assert save.status_code == 200
+
+    response = client.get(f"/pet/user/{current['id']}", headers={"Authorization": token})
+
+    assert response.status_code == 200
+    assert [pet["id"] for pet in response.json()["owned_pets"]] == [owned_pet_id]
+    assert [pet["id"] for pet in response.json()["saved_pets"]] == [saved_pet_id]
