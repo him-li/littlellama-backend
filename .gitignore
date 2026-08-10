@@ -6,4 +6,6 @@ __pycache__/
 .coverage
 htmlcov/
 *.py[cod]
+littlellama.db
+migration-test.db
 .DS_Store
