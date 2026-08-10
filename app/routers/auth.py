@@ -10,8 +10,8 @@ from app.services import user_payload
 router = APIRouter(tags=["authentication"])
 
 
-@router.post("/signup", status_code=status.HTTP_201_CREATED)
-def signup(payload: UserSignup, db: DbSession) -> dict[str, str]:
+@router.post("/signup", status_code=status.HTTP_201_CREATED, response_model=TokenResponse)
+def signup(payload: UserSignup, db: DbSession) -> TokenResponse:
     email = payload.email.lower()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already exists")
@@ -25,7 +25,7 @@ def signup(payload: UserSignup, db: DbSession) -> dict[str, str]:
     db.add(user)
     db.commit()
     db.refresh(user)
-    return {"id": str(user.id)}
+    return TokenResponse(token=create_access_token(str(user.id)))
 
 
 @router.post("/login", response_model=TokenResponse)

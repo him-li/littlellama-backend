@@ -12,18 +12,24 @@ def test_signup_login_and_current_user(client):
             "email": "demo@example.com",
             "phone": "123456",
             "password": "strong-password",
+            "confirmPassword": "strong-password",
         },
     )
     assert signup.status_code == 201
+
+    signup_token = signup.json()["token"]
+    current = client.get("/login", headers={"Authorization": signup_token})
+    assert current.status_code == 200
+    assert current.json()["email"] == "demo@example.com"
 
     login = client.post("/login", json={"email": "demo@example.com", "password": "strong-password"})
     assert login.status_code == 200
     token = login.json()["token"]
 
-    current = client.get("/login", headers={"Authorization": token})
-    assert current.status_code == 200
-    assert current.json()["email"] == "demo@example.com"
-    assert "password" not in current.json()
+    logged_in = client.get("/login", headers={"Authorization": token})
+    assert logged_in.status_code == 200
+    assert logged_in.json()["email"] == "demo@example.com"
+    assert "password" not in logged_in.json()
 
 
 def test_duplicate_email_and_invalid_login(client):
@@ -33,6 +39,7 @@ def test_duplicate_email_and_invalid_login(client):
         "email": "demo@example.com",
         "phone": "123456",
         "password": "strong-password",
+        "confirmPassword": "strong-password",
     }
     assert client.post("/signup", json=payload).status_code == 201
     assert client.post("/signup", json=payload).status_code == 409
@@ -57,12 +64,29 @@ def _signup_and_login(client, email):
             "email": email,
             "phone": "123456",
             "password": "strong-password",
+            "confirmPassword": "strong-password",
         },
     )
     assert signup.status_code == 201
     login = client.post("/login", json={"email": email, "password": "strong-password"})
     assert login.status_code == 200
     return login.json()["token"]
+
+
+def test_signup_rejects_mismatched_passwords(client):
+    response = client.post(
+        "/signup",
+        json={
+            "firstName": "Demo",
+            "lastName": "User",
+            "email": "mismatch@example.com",
+            "phone": "123456",
+            "password": "strong-password",
+            "confirmPassword": "different-password",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def _create_pet(db):
