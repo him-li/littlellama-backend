@@ -89,22 +89,24 @@ def test_signup_rejects_mismatched_passwords(client):
     assert response.status_code == 422
 
 
-def _create_pet(db):
+def _create_pet(db, **overrides):
     from app.models import Pet
 
-    pet = Pet(
-        type="Dog",
-        name="Mochi",
-        adoption_status="Available",
-        height=42,
-        weight=13,
-        color="Cream",
-        bio="A friendly demo dog",
-        hypoallergenic=False,
-        dietary_restrictions="None",
-        breed="Mixed",
-        picture="https://example.com/mochi.jpg",
-    )
+    fields = {
+        "type": "Dog",
+        "name": "Mochi",
+        "adoption_status": "Available",
+        "height": 42,
+        "weight": 13,
+        "color": "Cream",
+        "bio": "A friendly demo dog",
+        "hypoallergenic": False,
+        "dietary_restrictions": "None",
+        "breed": "Mixed",
+        "picture": "https://example.com/mochi.jpg",
+    }
+    fields.update(overrides)
+    pet = Pet(**fields)
     db.add(pet)
     db.commit()
     db.refresh(pet)
@@ -184,3 +186,19 @@ def test_user_pet_collections_separate_owned_and_saved_pets(client, db):
     assert response.status_code == 200
     assert [pet["id"] for pet in response.json()["owned_pets"]] == [owned_pet_id]
     assert [pet["id"] for pet in response.json()["saved_pets"]] == [saved_pet_id]
+
+
+def test_pet_search_uses_independent_name_height_and_weight_filters(client, db):
+    matching_id = _create_pet(db, name="Mochi One", height=42, weight=13)
+    _create_pet(db, name="Mochi Two", height=42, weight=18)
+    _create_pet(db, name="Pepper", height=42, weight=13)
+
+    response = client.get("/pet", params={"name": "Mochi", "height": 42, "weight": 13})
+
+    assert response.status_code == 200
+    assert [pet["id"] for pet in response.json()] == [matching_id]
+
+
+def test_pet_search_rejects_non_positive_measurements(client):
+    assert client.get("/pet", params={"height": 0}).status_code == 422
+    assert client.get("/pet", params={"weight": -1}).status_code == 422

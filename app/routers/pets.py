@@ -2,7 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.dependencies import AdminUser, CurrentUser, DbSession, OptionalUser
 from app.models import Pet, PetUser
@@ -28,8 +28,8 @@ def get_pets(
     name: str = "",
     type: str = "",
     adoption_status: str = "",
-    height: bool = False,
-    weight: bool = False,
+    height: Annotated[float | None, Query(gt=0)] = None,
+    weight: Annotated[float | None, Query(gt=0)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
     skip: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict]:
@@ -41,17 +41,10 @@ def get_pets(
         filters.append(Pet.type.ilike(type))
     if adoption_status:
         filters.append(Pet.adoption_status.ilike(adoption_status))
-    numeric_filters = []
-    try:
-        number = float(name)
-        if height:
-            numeric_filters.append(Pet.height == number)
-        if weight:
-            numeric_filters.append(Pet.weight == number)
-    except ValueError:
-        pass
-    if numeric_filters:
-        filters.append(or_(*numeric_filters))
+    if height is not None:
+        filters.append(Pet.height == height)
+    if weight is not None:
+        filters.append(Pet.weight == weight)
     if filters:
         query = query.where(*filters)
     pets = db.scalars(query).all()
