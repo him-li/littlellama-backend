@@ -46,3 +46,99 @@ def test_public_pet_list_is_empty(client):
     response = client.get("/pet")
     assert response.status_code == 200
     assert response.json() == []
+
+
+def _signup_and_login(client, email):
+    signup = client.post(
+        "/signup",
+        json={
+            "firstName": "Demo",
+            "lastName": "User",
+            "email": email,
+            "phone": "123456",
+            "password": "strong-password",
+        },
+    )
+    assert signup.status_code == 201
+    login = client.post("/login", json={"email": email, "password": "strong-password"})
+    assert login.status_code == 200
+    return login.json()["token"]
+
+
+def _create_pet(db):
+    from app.models import Pet
+
+    pet = Pet(
+        type="Dog",
+        name="Mochi",
+        adoption_status="Available",
+        height=42,
+        weight=13,
+        color="Cream",
+        bio="A friendly demo dog",
+        hypoallergenic=False,
+        dietary_restrictions="None",
+        breed="Mixed",
+        picture="https://example.com/mochi.jpg",
+    )
+    db.add(pet)
+    db.commit()
+    db.refresh(pet)
+    return str(pet.id)
+
+
+def test_pet_details_are_public(client, db):
+    pet_id = _create_pet(db)
+
+    response = client.get(f"/pet/{pet_id}")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Mochi"
+    assert response.json()["taken_by_user_id"] is None
+
+
+def test_only_fosterer_can_adopt_fostered_pet(client, db):
+    fosterer_token = _signup_and_login(client, "fosterer@example.com")
+    other_token = _signup_and_login(client, "other@example.com")
+    pet_id = _create_pet(db)
+
+    foster = client.post(
+        f"/pet/{pet_id}/foster",
+        json={},
+        headers={"Authorization": fosterer_token},
+    )
+    assert foster.status_code == 200
+    fosterer_id = foster.json()["taken_by_user_id"]
+
+    takeover = client.post(
+        f"/pet/{pet_id}/adopt",
+        json={},
+        headers={"Authorization": other_token},
+    )
+    assert takeover.status_code == 409
+
+    adopt = client.post(
+        f"/pet/{pet_id}/adopt",
+        json={},
+        headers={"Authorization": fosterer_token},
+    )
+    assert adopt.status_code == 200
+    assert adopt.json()["adoption_status"] == "Adopted"
+    assert adopt.json()["taken_by_user_id"] == fosterer_id
+
+
+def test_owned_pet_cannot_be_fostered_or_reassigned(client, db):
+    owner_token = _signup_and_login(client, "owner@example.com")
+    other_token = _signup_and_login(client, "visitor@example.com")
+    pet_id = _create_pet(db)
+
+    adopt = client.post(f"/pet/{pet_id}/adopt", json={}, headers={"Authorization": owner_token})
+    assert adopt.status_code == 200
+
+    foster = client.post(f"/pet/{pet_id}/foster", json={}, headers={"Authorization": other_token})
+    adopt_again = client.post(
+        f"/pet/{pet_id}/adopt", json={}, headers={"Authorization": other_token}
+    )
+
+    assert foster.status_code == 409
+    assert adopt_again.status_code == 409

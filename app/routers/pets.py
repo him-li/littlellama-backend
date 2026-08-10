@@ -176,11 +176,21 @@ def require_action_user(payload: PetAction, current: CurrentUser) -> uuid.UUID:
     return payload.user_id or current.id
 
 
+def ensure_pet_is_available(pet: Pet) -> None:
+    if pet.adoption_status != "Available" or pet.taken_by_user_id is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Pet is not available")
+
+
 @router.post("/{pet_id}/adopt")
 def adopt_pet(pet_id: uuid.UUID, payload: PetAction, current: CurrentUser, db: DbSession) -> dict:
     pet = get_pet_or_404(db, pet_id)
+    user_id = require_action_user(payload, current)
+    can_adopt = pet.adoption_status == "Available" and pet.taken_by_user_id is None
+    can_adopt = can_adopt or (pet.adoption_status == "Fostered" and pet.taken_by_user_id == user_id)
+    if not can_adopt:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Pet cannot be adopted by this user")
     pet.adoption_status = "Adopted"
-    pet.taken_by_user_id = require_action_user(payload, current)
+    pet.taken_by_user_id = user_id
     db.commit()
     return pet_payload(pet)
 
@@ -188,6 +198,7 @@ def adopt_pet(pet_id: uuid.UUID, payload: PetAction, current: CurrentUser, db: D
 @router.post("/{pet_id}/foster")
 def foster_pet(pet_id: uuid.UUID, payload: PetAction, current: CurrentUser, db: DbSession) -> dict:
     pet = get_pet_or_404(db, pet_id)
+    ensure_pet_is_available(pet)
     pet.adoption_status = "Fostered"
     pet.taken_by_user_id = require_action_user(payload, current)
     db.commit()
