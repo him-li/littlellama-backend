@@ -8,4 +8,5 @@ htmlcov/
 *.py[cod]
 littlellama.db
 migration-test.db
+test.db
 .DS_Store
