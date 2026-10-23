@@ -361,3 +361,88 @@ def test_full_user_response_includes_owned_pets(client, db):
     assert response.status_code == 200
     assert [pet["id"] for pet in response.json()["owned_pets"]] == [pet_id]
     assert "password" not in response.json()
+
+
+def test_signup_creates_admin_activity(client, db):
+    token = _signup_and_login(client, "activity-user@example.com")
+    _, admin_token = _create_admin(db)
+
+    forbidden = client.get("/activity", headers={"Authorization": token})
+    activity = client.get("/activity", headers={"Authorization": admin_token})
+
+    assert forbidden.status_code == 403
+    assert activity.status_code == 200
+    assert any(item["event_type"] == "user.created" for item in activity.json())
+
+
+def test_contact_inquiry_is_public_and_support_managed(client, db):
+    from app.models import User
+    from app.security import create_access_token, hash_password
+
+    created = client.post(
+        "/contact",
+        json={
+            "name": "Visitor",
+            "email": "visitor@example.com",
+            "subject": "Adoption question",
+            "message": "Can I meet this pet on Friday?",
+        },
+    )
+    support = User(
+        firstname="Support",
+        lastname="Agent",
+        email="support@example.com",
+        phone="123456",
+        password=hash_password("strong-password"),
+        role="support",
+    )
+    db.add(support)
+    db.commit()
+    db.refresh(support)
+    token = create_access_token(str(support.id))
+
+    listed = client.get("/contact", headers={"Authorization": token})
+    updated = client.put(
+        f"/contact/{created.json()['id']}",
+        json={"status": "resolved"},
+        headers={"Authorization": token},
+    )
+
+    assert created.status_code == 201
+    assert listed.status_code == 200
+    assert updated.json()["status"] == "resolved"
+
+
+def test_chat_persists_websocket_messages(client):
+    token = _signup_and_login(client, "chat-user@example.com")
+    conversation = client.post("/chat/conversations", headers={"Authorization": token}).json()
+
+    with client.websocket_connect(f"/chat/ws/{conversation['id']}?token={token}") as socket:
+        socket.send_text("Is Mochi available?")
+        received = socket.receive_json()
+
+    history = client.get("/chat/conversations", headers={"Authorization": token}).json()
+    assert received["body"] == "Is Mochi available?"
+    assert history[0]["messages"][0]["body"] == "Is Mochi available?"
+
+
+def test_admin_can_assign_support_role_but_cannot_demote_self(client, db):
+    admin, admin_token = _create_admin(db)
+    user_token = _signup_and_login(client, "future-support@example.com")
+    user = client.get("/login", headers={"Authorization": user_token}).json()
+
+    changed = client.put(
+        f"/user/{user['id']}/role",
+        json={"role": "support"},
+        headers={"Authorization": admin_token},
+    )
+    self_demote = client.put(
+        f"/user/{admin.id}/role",
+        json={"role": "user"},
+        headers={"Authorization": admin_token},
+    )
+
+    assert changed.status_code == 200
+    assert changed.json()["role"] == "support"
+    assert changed.json()["admin"] is False
+    assert self_demote.status_code == 409

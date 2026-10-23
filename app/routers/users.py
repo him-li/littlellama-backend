@@ -6,9 +6,9 @@ from sqlalchemy.orm import selectinload
 
 from app.dependencies import AdminUser, CurrentUser, DbSession
 from app.models import PetUser, User
-from app.schemas import UserOut, UserUpdate
+from app.schemas import UserOut, UserRoleUpdate, UserUpdate
 from app.security import hash_password
-from app.services import user_payload
+from app.services import record_activity, user_payload
 
 router = APIRouter(prefix="/user", tags=["users"])
 
@@ -46,6 +46,32 @@ def get_user_full(user_id: uuid.UUID, current: CurrentUser, db: DbSession) -> di
     )
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    return user_payload(user, full=True)
+
+
+@router.put("/{user_id}/role")
+def update_user_role(
+    user_id: uuid.UUID, payload: UserRoleUpdate, current: AdminUser, db: DbSession
+) -> dict:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    if user.id == current.id and payload.role != "admin":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "You cannot remove your own administrator access"
+        )
+    previous = "admin" if user.admin else user.role
+    user.role = payload.role
+    user.admin = payload.role == "admin"
+    record_activity(
+        db,
+        "user.role_changed",
+        "user",
+        user.id,
+        f"{user.firstname} {user.lastname}: {previous} → {payload.role}",
+        actor=current,
+    )
+    db.commit()
     return user_payload(user, full=True)
 
 

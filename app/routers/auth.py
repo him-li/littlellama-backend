@@ -5,7 +5,7 @@ from app.dependencies import DbSession, OptionalUser
 from app.models import User
 from app.schemas import LoginRequest, TokenResponse, UserOut, UserSignup
 from app.security import create_access_token, hash_password, verify_password
-from app.services import user_payload
+from app.services import record_activity, user_payload
 
 router = APIRouter(tags=["authentication"])
 
@@ -23,6 +23,15 @@ def signup(payload: UserSignup, db: DbSession) -> TokenResponse:
         password=hash_password(payload.password),
     )
     db.add(user)
+    db.flush()
+    record_activity(
+        db,
+        "user.created",
+        "user",
+        user.id,
+        f"New user: {user.firstname} {user.lastname}",
+        actor=user,
+    )
     db.commit()
     db.refresh(user)
     return TokenResponse(token=create_access_token(str(user.id)))

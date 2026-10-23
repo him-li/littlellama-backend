@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
@@ -37,6 +38,10 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=8, max_length=128)
 
 
+class UserRoleUpdate(BaseModel):
+    role: Literal["user", "support", "admin"]
+
+
 class UserOut(BaseModel):
     id: uuid.UUID
     firstname: str
@@ -45,6 +50,7 @@ class UserOut(BaseModel):
     phone: str
     bio: str | None = None
     admin: bool = False
+    role: str = "user"
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -75,3 +81,30 @@ class PetAction(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
+
+
+class ContactInquiryCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    email: EmailStr
+    subject: str = Field(min_length=3, max_length=200)
+    message: str = Field(min_length=10, max_length=5000)
+
+
+class InquiryStatusUpdate(BaseModel):
+    status: Literal["open", "in_progress", "resolved"]
+
+
+class ChatMessageCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class ActivityOut(BaseModel):
+    id: uuid.UUID
+    event_type: str
+    subject_type: str
+    subject_id: str
+    title: str
+    detail: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

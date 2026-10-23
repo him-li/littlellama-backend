@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.dependencies import AdminUser, CurrentUser, DbSession, OptionalUser
 from app.models import Pet, PetUser
 from app.schemas import PetAction
-from app.services import pet_payload
+from app.services import notify_new_pet, pet_payload, record_activity
 from app.uploads import upload_pet_image
 
 router = APIRouter(prefix="/pet", tags=["pets"])
@@ -120,6 +120,9 @@ async def add_pet(
         picture=picture_url,
     )
     db.add(pet)
+    db.flush()
+    record_activity(db, "pet.created", "pet", pet.id, f"New pet: {pet.name}", actor=_)
+    notify_new_pet(db, pet)
     db.commit()
     db.refresh(pet)
     return {"id": str(pet.id)}
@@ -143,6 +146,7 @@ async def edit_pet(
     image: UploadFile | None = File(None),
 ) -> dict:
     pet = get_pet_or_404(db, pet_id)
+    old_status = pet.adoption_status
     for key, value in {
         "type": type,
         "name": name,
@@ -158,6 +162,16 @@ async def edit_pet(
         setattr(pet, key, value)
     if image:
         pet.picture = await upload_pet_image(image)
+    record_activity(db, "pet.updated", "pet", pet.id, f"Pet updated: {pet.name}", actor=_)
+    if old_status != pet.adoption_status:
+        record_activity(
+            db,
+            "pet.status_changed",
+            "pet",
+            pet.id,
+            f"{pet.name}: {old_status} → {pet.adoption_status}",
+            actor=_,
+        )
     db.commit()
     db.refresh(pet)
     return pet_payload(pet)
@@ -184,6 +198,7 @@ def adopt_pet(pet_id: uuid.UUID, payload: PetAction, current: CurrentUser, db: D
         raise HTTPException(status.HTTP_409_CONFLICT, "Pet cannot be adopted by this user")
     pet.adoption_status = "Adopted"
     pet.taken_by_user_id = user_id
+    record_activity(db, "pet.status_changed", "pet", pet.id, f"{pet.name}: Adopted", actor=current)
     db.commit()
     return pet_payload(pet)
 
@@ -194,6 +209,7 @@ def foster_pet(pet_id: uuid.UUID, payload: PetAction, current: CurrentUser, db: 
     ensure_pet_is_available(pet)
     pet.adoption_status = "Fostered"
     pet.taken_by_user_id = require_action_user(payload, current)
+    record_activity(db, "pet.status_changed", "pet", pet.id, f"{pet.name}: Fostered", actor=current)
     db.commit()
     return pet_payload(pet)
 
@@ -205,6 +221,9 @@ def return_pet(pet_id: uuid.UUID, current: CurrentUser, db: DbSession) -> dict:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This is not allowed")
     pet.adoption_status = "Available"
     pet.taken_by_user_id = None
+    record_activity(
+        db, "pet.status_changed", "pet", pet.id, f"{pet.name}: Available", actor=current
+    )
     db.commit()
     return pet_payload(pet)
 
