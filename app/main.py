@@ -4,7 +4,7 @@ from sqlalchemy import text
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.routers import auth, pets, users
+from app.routers import activity, auth, chat, contact, notifications, pets, users
 from app.schemas import HealthResponse
 
 settings = get_settings()
@@ -23,6 +23,10 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(pets.router)
+app.include_router(activity.router)
+app.include_router(notifications.router)
+app.include_router(contact.router)
+app.include_router(chat.router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["operations"])

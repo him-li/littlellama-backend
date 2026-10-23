@@ -2,12 +2,12 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.dependencies import AdminUser, CurrentUser, DbSession, OptionalUser
 from app.models import Pet, PetUser
 from app.schemas import PetAction
-from app.services import pet_payload
+from app.services import notify_new_pet, pet_payload, record_activity
 from app.uploads import upload_pet_image
 
 router = APIRouter(prefix="/pet", tags=["pets"])
@@ -28,8 +28,8 @@ def get_pets(
     name: str = "",
     type: str = "",
     adoption_status: str = "",
-    height: bool = False,
-    weight: bool = False,
+    height: Annotated[float | None, Query(gt=0)] = None,
+    weight: Annotated[float | None, Query(gt=0)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
     skip: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict]:
@@ -41,17 +41,10 @@ def get_pets(
         filters.append(Pet.type.ilike(type))
     if adoption_status:
         filters.append(Pet.adoption_status.ilike(adoption_status))
-    numeric_filters = []
-    try:
-        number = float(name)
-        if height:
-            numeric_filters.append(Pet.height == number)
-        if weight:
-            numeric_filters.append(Pet.weight == number)
-    except ValueError:
-        pass
-    if numeric_filters:
-        filters.append(or_(*numeric_filters))
+    if height is not None:
+        filters.append(Pet.height == height)
+    if weight is not None:
+        filters.append(Pet.weight == weight)
     if filters:
         query = query.where(*filters)
     pets = db.scalars(query).all()
@@ -66,17 +59,17 @@ def get_pets(
 
 
 @router.get("/user/{user_id}")
-def get_pets_by_user(user_id: uuid.UUID, current: CurrentUser, db: DbSession) -> list[dict]:
+def get_pets_by_user(user_id: uuid.UUID, current: CurrentUser, db: DbSession) -> dict:
     if current.id != user_id and not current.admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This is not allowed")
     owned = db.scalars(select(Pet).where(Pet.taken_by_user_id == user_id)).all()
     links = db.scalars(
         select(PetUser).where(PetUser.user_id == user_id, PetUser.saved.is_(True))
     ).all()
-    result = {pet.id: pet_payload(pet) for pet in owned}
-    for link in links:
-        result[link.pet_id] = pet_payload(link.pet, link)
-    return list(result.values())
+    return {
+        "owned_pets": [pet_payload(pet) for pet in owned],
+        "saved_pets": [pet_payload(link.pet, link) for link in links],
+    }
 
 
 @router.get("/{pet_id}")
@@ -127,6 +120,9 @@ async def add_pet(
         picture=picture_url,
     )
     db.add(pet)
+    db.flush()
+    record_activity(db, "pet.created", "pet", pet.id, f"New pet: {pet.name}", actor=_)
+    notify_new_pet(db, pet)
     db.commit()
     db.refresh(pet)
     return {"id": str(pet.id)}
@@ -150,6 +146,7 @@ async def edit_pet(
     image: UploadFile | None = File(None),
 ) -> dict:
     pet = get_pet_or_404(db, pet_id)
+    old_status = pet.adoption_status
     for key, value in {
         "type": type,
         "name": name,
@@ -165,6 +162,16 @@ async def edit_pet(
         setattr(pet, key, value)
     if image:
         pet.picture = await upload_pet_image(image)
+    record_activity(db, "pet.updated", "pet", pet.id, f"Pet updated: {pet.name}", actor=_)
+    if old_status != pet.adoption_status:
+        record_activity(
+            db,
+            "pet.status_changed",
+            "pet",
+            pet.id,
+            f"{pet.name}: {old_status} → {pet.adoption_status}",
+            actor=_,
+        )
     db.commit()
     db.refresh(pet)
     return pet_payload(pet)
@@ -176,11 +183,22 @@ def require_action_user(payload: PetAction, current: CurrentUser) -> uuid.UUID:
     return payload.user_id or current.id
 
 
+def ensure_pet_is_available(pet: Pet) -> None:
+    if pet.adoption_status != "Available" or pet.taken_by_user_id is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Pet is not available")
+
+
 @router.post("/{pet_id}/adopt")
 def adopt_pet(pet_id: uuid.UUID, payload: PetAction, current: CurrentUser, db: DbSession) -> dict:
     pet = get_pet_or_404(db, pet_id)
+    user_id = require_action_user(payload, current)
+    can_adopt = pet.adoption_status == "Available" and pet.taken_by_user_id is None
+    can_adopt = can_adopt or (pet.adoption_status == "Fostered" and pet.taken_by_user_id == user_id)
+    if not can_adopt:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Pet cannot be adopted by this user")
     pet.adoption_status = "Adopted"
-    pet.taken_by_user_id = require_action_user(payload, current)
+    pet.taken_by_user_id = user_id
+    record_activity(db, "pet.status_changed", "pet", pet.id, f"{pet.name}: Adopted", actor=current)
     db.commit()
     return pet_payload(pet)
 
@@ -188,8 +206,10 @@ def adopt_pet(pet_id: uuid.UUID, payload: PetAction, current: CurrentUser, db: D
 @router.post("/{pet_id}/foster")
 def foster_pet(pet_id: uuid.UUID, payload: PetAction, current: CurrentUser, db: DbSession) -> dict:
     pet = get_pet_or_404(db, pet_id)
+    ensure_pet_is_available(pet)
     pet.adoption_status = "Fostered"
     pet.taken_by_user_id = require_action_user(payload, current)
+    record_activity(db, "pet.status_changed", "pet", pet.id, f"{pet.name}: Fostered", actor=current)
     db.commit()
     return pet_payload(pet)
 
@@ -201,6 +221,9 @@ def return_pet(pet_id: uuid.UUID, current: CurrentUser, db: DbSession) -> dict:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This is not allowed")
     pet.adoption_status = "Available"
     pet.taken_by_user_id = None
+    record_activity(
+        db, "pet.status_changed", "pet", pet.id, f"{pet.name}: Available", actor=current
+    )
     db.commit()
     return pet_payload(pet)
 

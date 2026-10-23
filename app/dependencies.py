@@ -42,11 +42,18 @@ def current_user(user: Annotated[User | None, Depends(optional_user)]) -> User:
 
 
 def admin_user(user: Annotated[User, Depends(current_user)]) -> User:
-    if not user.admin:
+    if not user.admin and user.role != "admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Administrator access required")
+    return user
+
+
+def support_user(user: Annotated[User, Depends(current_user)]) -> User:
+    if not user.admin and user.role not in {"admin", "support"}:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Support access required")
     return user
 
 
 CurrentUser = Annotated[User, Depends(current_user)]
 AdminUser = Annotated[User, Depends(admin_user)]
 OptionalUser = Annotated[User | None, Depends(optional_user)]
+SupportUser = Annotated[User, Depends(support_user)]
